@@ -159,6 +159,14 @@ button {
   display: none;
 }
 
+.buy {
+  color: #16a34a;
+}
+
+.sell {
+  color: #dc2626;
+}
+
 @media (max-width: 768px) {
   .desktop-only { display: none; }
 }

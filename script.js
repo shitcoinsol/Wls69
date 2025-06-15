@@ -2,6 +2,9 @@
 const MORALIS_API_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJub25jZSI6IjkyMzBkNGU3LWUyNjEtNGNiYi1hYzgzLTY4MDZmNDg5YzRhOSIsIm9yZ0lkIjoiNDUzNzM2IiwidXNlcklkIjoiNDY2ODMzIiwidHlwZUlkIjoiODVkOTcxZDMtODgzOS00NmYxLWJiMGEtM2IyY2Y5ZmE4NTU2IiwidHlwZSI6IlBST0pFQ1QiLCJpYXQiOjE3NDk4MDU3MTcsImV4cCI6NDkwNTU2NTcxN30.nbLVfn0ocROspwVeWXIOtw-d6Gm42Bnshujhlp3JrMI';
 const SOLSCAN_API_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjcmVhdGVkQXQiOjE3NDk4NjAwMjIwMDUsImVtYWlsIjoid2F4amluaG8wMkBnbWFpbC5jb20iLCJhY3Rpb24iOiJ0b2tlbi1hcGkiLCJhcGlWZXJzaW9uIjoidjIiLCJpYXQiOjE3NDk4NjAwMjJ9.I1laMt2a0wIiMeQ0JFEDDWWqvwLQvnSjcS0mdvy-vM0';
 
+const HOLDER_TIMES = ['5m', '1h', '6h', '24h', '3d', '7d', '30d'];
+const RATIO_TIMES = ['5m', '1h', '6h', '24h'];
+
 async function showResults(fromFloating) {
   const ca = fromFloating
     ? document.getElementById("floatingInput")?.value || document.getElementById("mobileInput")?.value
@@ -60,7 +63,9 @@ function toggleMobileSearch() {
 }
 
 async function loadTokenData(address) {
-  const [meta, price, analytics, holders, holderChange, swaps] = await Promise.all([
+  const header = document.querySelector('.token-header h2');
+  if (header) header.textContent = 'Loading...';
+  const [meta, price, analytics, holders, holderChange, swaps, solMeta] = await Promise.all([
     fetch(`https://solana-gateway.moralis.io/token/mainnet/${address}/metadata`, {
       headers: { 'X-API-Key': MORALIS_API_KEY }
     }).then(r => r.json()).catch(() => ({})),
@@ -79,30 +84,40 @@ async function loadTokenData(address) {
     fetch(`https://solana-gateway.moralis.io/token/mainnet/${address}/swaps`, {
       headers: { 'X-API-Key': MORALIS_API_KEY }
     }).then(r => r.json()).catch(() => ({})),
+    fetch(`https://pro-api.solscan.io/v2.0/token/meta?tokenAddress=${address}`, {
+      headers: { token: SOLSCAN_API_KEY }
+    }).then(r => r.json()).catch(() => ({})),
   ]);
 
-  updateHeader(meta, price, analytics);
+  updateHeader(meta, price, analytics, solMeta);
   updateChart(address);
   updateTopHolders(holders);
-  updateHolderChange(holderChange);
+  initHolderChange(address, holderChange);
   updateRecentSwaps(swaps);
-  updateBuySellRatio(analytics);
+  initBuySellRatio(address, analytics);
 }
 
-function updateHeader(meta, price, analytics) {
+function updateHeader(meta, price, analytics, solMeta) {
   const header = document.querySelector('.token-header');
   const img = header.querySelector('img');
   if (meta.logo) img.src = meta.logo;
 
   const h2 = header.querySelector('h2');
-  const priceSpan = h2.querySelector('.price');
-  h2.firstChild.textContent = `${meta.symbol || ''} `;
-  if (priceSpan) priceSpan.textContent = price.usdPrice ? `$${Number(price.usdPrice).toFixed(3)}` : '';
+  const change = price.usdPrice_24hr_percent_change ?? price.usdPrice_24h_percent_change ?? price.priceChange24h ?? 0;
+  const changeClass = change >= 0 ? 'positive' : 'negative';
+  h2.innerHTML = `${meta.symbol || ''} <span class="price">${price.usdPrice ? '$' + Number(price.usdPrice).toFixed(3) : ''}</span>` +
+    `<span class="price-change ${changeClass}">${change ? (change > 0 ? '+' : '') + Number(change).toFixed(2) + '%' : ''}</span>`;
 
   const metas = header.querySelectorAll('.meta');
-  if (metas[0]) metas[0].textContent = `Market Cap: ${formatCurrency(analytics.marketCapUsd)} · Liquidity: ${formatCurrency(analytics.liquidityUsd)}`;
-  if (metas[1]) metas[1].textContent = `Supply: ${formatNumber(meta.supply)}`;
-  if (metas[2]) metas[2].style.display = 'none';
+  const mc = analytics.totalFullyDilutedValuation ?? solMeta.fullyDilutedValue;
+  if (metas[0]) metas[0].textContent = `Market Cap: ${formatCurrency(mc)} · Liquidity: ${formatCurrency(analytics.totalLiquidityUsd)}`;
+  if (metas[1]) metas[1].textContent = `Supply: ${formatNumber(meta.totalSupply || meta.supply)}`;
+  if (metas[2]) {
+    const created = solMeta.firstBlockTime ? new Date(solMeta.firstBlockTime * 1000).toLocaleDateString() : '';
+    const volume = solMeta.volume24h ? formatCurrency(solMeta.volume24h) : '';
+    const holders = solMeta.holder ?? solMeta.holdersCount ?? '';
+    metas[2].textContent = `Volume24h: ${volume} · Holders: ${holders} · Created: ${created}`;
+  }
 }
 
 function updateChart(address) {
@@ -123,15 +138,35 @@ function updateTopHolders(data) {
   if (!div) return;
   const holders = (data.result || []).slice(0, 10);
   div.innerHTML = '<h4>Top Holders</h4><ul>' +
-    holders.map(h => `<li>${shorten(h.address)} - ${Number(h.share).toFixed(2)}%</li>`).join('') +
+    holders.map(h => `<li><a href="https://solscan.io/account/${h.address}" target="_blank">${shorten(h.address)}</a> - ${Number(h.share).toFixed(2)}%</li>`).join('') +
     '</ul>';
 }
 
-function updateHolderChange(data) {
+function initHolderChange(address, data) {
   const div = document.querySelectorAll('.section-grid')[0].children[1];
   if (!div) return;
+  div.innerHTML = '<h4>Holder Change</h4><select id="holder-time"></select><p id="holder-value">Loading...</p>';
+  const sel = div.querySelector('#holder-time');
+  sel.innerHTML = HOLDER_TIMES.map(t => `<option value="${t}">${t}</option>`).join('');
+  sel.addEventListener('change', () => loadHolderChange(address, sel.value));
+  updateHolderChange(data);
+}
+
+async function loadHolderChange(address, time) {
+  const p = document.getElementById('holder-value');
+  if (p) p.textContent = 'Loading...';
+  const res = await fetch(`https://pro-api.solscan.io/v2.0/token/holders?tokenAddress=${address}&time=${time}`, {
+    headers: { token: SOLSCAN_API_KEY }
+  }).then(r => r.json()).catch(() => ({}));
+  updateHolderChange(res);
+}
+
+function updateHolderChange(data) {
+  const p = document.getElementById('holder-value');
+  if (!p) return;
   const change = data.change || 0;
-  div.innerHTML = `<h4>Holder Change</h4><p>${change >= 0 ? '+' : ''}${change} in last hour</p>`;
+  const pct = data.changePercent ? ` (${Number(data.changePercent).toFixed(2)}%)` : '';
+  p.textContent = `${change >= 0 ? '+' : ''}${change}${pct}`;
 }
 
 function updateRecentSwaps(data) {
@@ -140,19 +175,42 @@ function updateRecentSwaps(data) {
   const swaps = (data.result || []).slice(0, 10);
   list.innerHTML = swaps.map(s => {
     const side = s.side?.toLowerCase() === 'buy' ? 'buy' : 'sell';
-    return `<li class="${side}">${side === 'buy' ? 'Buy' : 'Sell'} - ${formatCurrency(s.quoteTokenPriceUsd)}</li>`;
+    const addr = shorten(s.walletAddress);
+    const amt = formatCurrency(s.quoteTokenPriceUsd);
+    const time = relativeTime(s.blockTimestamp);
+    const tx = s.transactionSignature || s.txHash || s.transactionHash;
+    return `<li class="${side}"><a href="https://solscan.io/tx/${tx}" target="_blank">${side === 'buy' ? 'Buy' : 'Sell'} - ${amt}</a> - ${addr} - ${time}</li>`;
   }).join('');
 }
 
-function updateBuySellRatio(data) {
+function initBuySellRatio(address, data) {
   const div = document.querySelectorAll('.section-grid')[1].children[1];
   if (!div) return;
-  const ratio = data.buySellRatio || { buy: 0, sell: 0 };
-  const volume = data.volumeChange24h || 0;
-  const wallets = (data.topActiveWallets || []).map(shorten).join(', ');
-  div.innerHTML = `<h4>Buy/Sell Ratio</h4><p>${ratio.buy}% / ${ratio.sell}%</p>` +
-    `<h4>Volume Change</h4><p>${volume}%</p>` +
-    `<h4>Top Active Wallets</h4><p>${wallets}</p>`;
+  div.innerHTML = '<h4>Buy/Sell Ratio</h4><select id="ratio-time"></select><p id="ratio-value">Loading...</p>';
+  const sel = div.querySelector('#ratio-time');
+  sel.innerHTML = RATIO_TIMES.map(t => `<option value="${t}">${t}</option>`).join('');
+  sel.addEventListener('change', () => loadBuySellRatio(address, sel.value));
+  updateBuySellRatio(data);
+}
+
+async function loadBuySellRatio(address, time) {
+  const p = document.getElementById('ratio-value');
+  if (p) p.textContent = 'Loading...';
+  const res = await fetch(`https://deep-index.moralis.io/api/v2.2/tokens/${address}/analytics?timeFrame=${time}`, {
+    headers: { 'X-API-Key': MORALIS_API_KEY }
+  }).then(r => r.json()).catch(() => ({}));
+  updateBuySellRatio(res);
+}
+
+function updateBuySellRatio(data) {
+  const p = document.getElementById('ratio-value');
+  if (!p) return;
+  const buyVol = Number(data.totalBuyVolume || 0);
+  const sellVol = Number(data.totalSellVolume || 0);
+  const total = buyVol + sellVol || 1;
+  const buyPct = (buyVol / total) * 100;
+  const sellPct = 100 - buyPct;
+  p.innerHTML = `<span class="buy">Buy ${buyPct.toFixed(0)}%</span> / <span class="sell">Sell ${sellPct.toFixed(0)}%</span>`;
 }
 
 function formatCurrency(num) {
@@ -173,6 +231,16 @@ function formatNumber(num) {
 
 function shorten(addr) {
   return addr ? addr.slice(0, 4) + '...' + addr.slice(-4) : '';
+}
+
+function relativeTime(timestamp) {
+  const diff = Date.now() - new Date(timestamp).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  return `${days}d ago`;
 }
 
 // Hide floating search components on non-result pages using classList

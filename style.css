@@ -61,6 +61,12 @@ button {
   color: #10b981;
   margin-left: 8px;
 }
+.price-change {
+  font-size: 0.9rem;
+  margin-left: 4px;
+}
+.price-change.positive { color: #16a34a; }
+.price-change.negative { color: #dc2626; }
 
 .section {
   margin-top: 32px;
